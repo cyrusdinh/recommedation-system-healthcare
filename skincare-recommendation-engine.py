@@ -13,38 +13,25 @@ from ipywidgets import interact, interactive, fixed, interact_manual
 data = pd.read_csv('data/skincare_products_clean.csv')
 
 # Preprocessing ingredients
-for i in range(len(data['clean_ingreds'])):
-    data['clean_ingreds'].iloc[i] = str(data['clean_ingreds'].iloc[i]).replace('[', '').replace(']', '').replace("'", '').replace('"', '')
-
+data['clean_ingreds'] = data['clean_ingreds'].apply(lambda x: str(x).replace('[', '').replace(']', '').replace("'", '').replace('"', ''))
 all_ingreds = []
+
 for i in data['clean_ingreds']:
     ingreds_list = i.split(', ')
-    for j in ingreds_list:
-        all_ingreds.append(j)
+    all_ingreds.extend(ingreds_list)
 
 all_ingreds = sorted(set(all_ingreds))
-all_ingreds.remove('')
-for i in range(len(all_ingreds)):
-    if all_ingreds[i][-1] == ' ':
-        all_ingreds[i] = all_ingreds[i][0:-1]
+all_ingreds = [ingred.strip() for ingred in all_ingreds if ingred != '']
 
-one_hot_list = [[0] * 0 for i in range(len(all_ingreds))]
+# Create one-hot encoding matrix
+one_hot_list = [[0] * len(data) for _ in range(len(all_ingreds))]
 
-for i in data['clean_ingreds']:
-    k = 0
-    for j in all_ingreds:
-        if j in i:
-            one_hot_list[k].append(1)
-        else:
-            one_hot_list[k].append(0)
-        k += 1
-
-ingred_matrix = pd.DataFrame(one_hot_list).transpose()
-ingred_matrix.columns = [sorted(set(all_ingreds))]
+for i, ingredient in enumerate(all_ingreds):
+    data[ingredient] = data['clean_ingreds'].apply(lambda x: 1 if ingredient in x else 0)
 
 # Visualizing similarities
 svd = TruncatedSVD(n_components=150, n_iter=1000, random_state=6)
-svd_features = svd.fit_transform(ingred_matrix)
+svd_features = svd.fit_transform(data[all_ingreds])
 tsne = TSNE(n_components=2, n_iter=1000000, random_state=6)
 tsne_features = tsne.fit_transform(svd_features)
 
@@ -61,8 +48,7 @@ plot = figure(title="Mapped Similarities", width=800, height=600)
 plot.xaxis.axis_label = "t-SNE 1"
 plot.yaxis.axis_label = 't-SNE 2'
 
-plot.circle(x='X', y='Y', source=source, fill_alpha=0.7, size=10,
-            color='#c0a5e3', alpha=1)
+plot.circle(x='X', y='Y', source=source, fill_alpha=0.7, size=10, color='#c0a5e3', alpha=1)
 
 plot.background_fill_color = "#E9E9E9"
 plot.background_fill_alpha = 0.3
@@ -86,12 +72,8 @@ brand_list = ["111skin", "a'kin", ... ]  # Complete the list with all brand name
 brand_list = sorted(brand_list, key=len, reverse=True)
 
 data['brand'] = data['product_name'].str.lower()
-k = 0
-for i in data['brand']:
-    for j in brand_list:
-        if j in i:
-            data['brand'][k] = data['brand'][k].replace(i, j.title())
-    k += 1
+for i, brand in enumerate(brand_list):
+    data['brand'] = data['brand'].str.replace(brand.lower(), brand.title())
 
 data['brand'] = data['brand'].replace(['Aurelia Probiotic Skincare'], 'Aurelia Skincare')
 data['brand'] = data['brand'].replace(['Avene'], 'Avène')
@@ -107,43 +89,40 @@ def recommender(search):
     output = []
     binary_list = []
     idx = data[data['product_name'] == search].index.item()
-    for i in ingred_matrix.iloc[idx][1:]:
-        binary_list.append(i)
+    for i in all_ingreds:
+        binary_list.append(data.iloc[idx][i])
+
     point1 = np.array(binary_list).reshape(1, -1)
-    point1 = [val for sublist in point1 for val in sublist]
-    prod_type = data['product_type'][data['product_name'] == search].iat[0]
-    brand_search = data['brand'][data['product_name'] == search].iat[0]
+    prod_type = data['product_type'][idx]
+    brand_search = data['brand'][idx]
     data_by_type = data[data['product_type'] == prod_type]
 
-    for j in range(data_by_type.index[0], data_by_type.index[0] + len(data_by_type)):
-        binary_list2 = []
-        for k in ingred_matrix.iloc[j][1:]:
-            binary_list2.append(k)
+    for j in range(data_by_type.shape[0]):
+        binary_list2 = data_by_type.iloc[j][all_ingreds].tolist()
         point2 = np.array(binary_list2).reshape(1, -1)
-        point2 = [val for sublist in point2 for val in sublist]
-        dot_product = np.dot(point1, point2)
+        dot_product = np.dot(point1, point2.T)
         norm_1 = np.linalg.norm(point1)
         norm_2 = np.linalg.norm(point2)
         cos_sim = dot_product / (norm_1 * norm_2)
-        cs_list.append(cos_sim)
-    data_by_type = pd.DataFrame(data_by_type)
+        cs_list.append(cos_sim.item())
+
     data_by_type['cos_sim'] = cs_list
     data_by_type = data_by_type.sort_values('cos_sim', ascending=False)
     data_by_type = data_by_type[data_by_type.product_name != search]
-    l = 0
-    for m in range(len(data_by_type)):
-        brand = data_by_type['brand'].iloc[l]
+
+    for _, row in data_by_type.iterrows():
+        brand = row['brand']
         if len(brands) == 0:
             if brand != brand_search:
                 brands.append(brand)
-                output.append(data_by_type.iloc[l])
+                output.append(row[['product_name', 'cos_sim']])
         elif brands.count(brand) < 2:
             if brand != brand_search:
                 brands.append(brand)
-                output.append(data_by_type.iloc[l])
-        l += 1
+                output.append(row[['product_name', 'cos_sim']])
 
-    return print('\033[1m', 'Recommending products similar to', search,':', '\033[0m'), print(pd.DataFrame(output)[['product_name', 'cos_sim']].head(5))
+    print('\033[1m', 'Recommending products similar to', search, ':', '\033[0m')
+    print(pd.DataFrame(output).head(5))
 
 # Using function to get recommendations
 recommender("Origins GinZing™ Energy-Boosting Tinted Moisturiser SPF40 50ml")
